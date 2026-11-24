@@ -1,0 +1,54 @@
+name: Post PR Validation
+
+on:
+  # Runs automatically after PR Validation finishes (workflow file must be on the default branch)
+  workflow_run:
+    workflows: [PR Validation]
+    types: [completed]
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to report status on (PR head SHA)"
+        required: true
+
+permissions:
+  contents: read
+  statuses: write        # lets this workflow show up in the PR checks list
+  pull-requests: write   # lets this workflow comment on the PR
+
+jobs:
+  post-validation:
+    # Only continue if PR Validation succeeded (or when run manually)
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha || inputs.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Mark Post PR Validation as pending on the PR
+        run: |
+          gh api repos/${{ github.repository }}/statuses/$SHA \
+            -f state=pending -f context="Post PR Validation" \
+            -f description="Post PR Validation is running" -f target_url="$RUN_URL"
+
+      - name: Do post-validation work
+        run: |
+          echo "Post PR Validation triggered by: ${{ github.event_name }}"
+          echo "Checking out nothing from the PR (safe); SHA=$SHA"
+          sleep 10
+
+      - name: Report result on the PR
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then STATE=success; else STATE=failure; fi
+          gh api repos/${{ github.repository }}/statuses/$SHA \
+            -f state=$STATE -f context="Post PR Validation" \
+            -f description="Post PR Validation finished: $STATE" -f target_url="$RUN_URL"
+
+          # Comment on every PR that contains this commit
+          for PR in $(gh api repos/${{ github.repository }}/commits/$SHA/pulls --jq '.[].number'); do
+            gh pr comment "$PR" --repo ${{ github.repository }} \
+              --body "Post PR Validation was triggered after PR Validation: **$STATE** — [view run]($RUN_URL)"
+          done
